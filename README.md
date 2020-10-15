@@ -1,2 +1,2 @@
 # CDP-Webscraping-Project
-A simple code to grab aldermanic election data from the Chicago Democracy Project
+A simple code to grab aldermanic election data from the Chicago Democracy Project. This code utilizes the tidyverse, Rselenium, and rvest packages to scrape a dataset off of the Chicago democracy Project website (http://chicagodemocracy.org/ChooseElection.jsp). The goal of this web scraping code is to develop a dataset that is usable to run a variety of regression models to analyze the impact of incumbency advantage on aldermanic elections. 
