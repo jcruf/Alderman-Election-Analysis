@@ -1,0 +1,110 @@
+---
+title: "Webscraping_code"
+author: "John Ruf"
+date: "10/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Scraping the data
+Chicagodemocracyproject's website contains a trove of local electoral data, however each election's data is stored at a seperate link, so we need to scrape each of those links, create a function that will scrape the information off of each of those links, and then bind them together into a tangible data frame. First we scrape the links using Rselenium to navigate to the website and select the checkbox that indicates "Alderman". Then we use standard Rvest commands to scrape the link at each node and store it into a dataframe and remove the "junk. Unfortunately the scrape did not yield us the entire link, but rather the end of it so we need to use stringr to attach the end of the link to the chicagodemocracy.org website link to finalize the link scraping process. 
+
+This document is split into steps and then into parts. The code only runs effectively when each step is ran separately. There are 3 primary steps: Scraping the electoral data links, developing a function that can scrape the electoral data from each link, and then mapping that function to every element of the link list.
+
+Note that docker is required for Rselenium to run effectively! If you're getting the following error: "Error in checkError(res) : Undefined error in httr call. httr output: Failed to connect to localhost port 4445: Connection refused" that means that docker is not running correctly and/or you need to restart docker.
+
+###Note that docker is required for Rselenium to effectively run!
+
+
+```{r Link Scraper, echo=TRUE}
+#Step 1: Scrape the set of links that contain aldermanic electoral data
+library(RSelenium)
+library(tidyverse)
+library(Rcrawler)
+library(rvest)
+
+  #Part A: Initialize the Rselenium driver and navigate to the correct website.
+remDr <- RSelenium::remoteDriver(remoteServerAddr = "localhost",
+                                 port = 4445L,
+                                 browserName = "chrome")
+remDr$open()
+remDr$navigate("http://chicagodemocracy.org/ChooseElection.jsp")
+
+  #Part B: Select the correct checkbox element utilizing the xpath command
+alderman<- remDr$findElement(using = 'xpath', value = '//input[@value="Alderman"]')
+alderman$clickElement()
+
+  #Part C: Read the HTML document and grab all links using the soan A node.
+alderman_html <- xml2::read_html(remDr$getPageSource()[[1]])
+links<-alderman_html %>%
+  html_nodes("span a") %>%
+  html_attrs
+  #Part D: format links into a usable data frame
+linksdf<-data.frame(links)
+linksdf<-pivot_longer(linksdf,cols = everything(linksdf))
+linksdf<-linksdf %>%
+  mutate(
+    value=as.character(value),
+    link=stringr::str_c('http://chicagodemocracy.org/',value)
+  )
+
+linksdf <- linksdf %>%
+  slice(-c(1,2))
+
+
+
+```
+
+Next we need to develop a function that will scrape the electoral information off of each of these individual links by taking a link as an input and then scraping off the table information from the nodes, and organize it with a while loop into a recognizable vector. 
+
+```{r echo=TRUE}
+
+#Step 2: Create a function that scrapes off the electoral data 
+  #Part A: Initialize function
+CDP_Scrape<- function(input){
+  
+  #Part B: Read HTML and scrape text from tables and their titles.
+  
+Aldermen_HTML=read_html(input)
+session<-html_session(input)
+scrape<-session %>%
+  html_nodes("td") %>%
+  html_text
+title<-session %>%
+  html_nodes("h2") %>%
+  html_text
+
+    #Note that if you run this code by itself (outside of CDP_Scrape's function) the output is a list where the first 5 elements are the data that we need, and the 6th element is a tab. So we need to create a while loop that detects each tab and adds a new row to the dataset for each additional candidate.
+
+  #Part C: Develop First column of candidate data frame
+
+output<-data.frame(scrape[1],scrape[2],scrape[3],scrape[4],scrape[5],title[1])
+names(output)<-c("Name","Party","Rank","VoteCount","VoteShare","Title")
+
+  #Part D: Utilize a while loop to continuously add rows to the dataframe until there are no more rows to add.
+
+i<- 1
+while (scrape[6*i+6] == scrape[6]) {
+  data<-data.frame(scrape[6*i+6-5],scrape[6*i+6-4],scrape[6*i+6-3],scrape[6*i+6-2],scrape[6*i+6-1],title[1])
+  names(data)<-c("Name","Party","Rank","VoteCount","VoteShare","Title")
+  output<-rbind(output,data)
+  i<-i+1
+}
+  #Part E: Output Dataframe
+output}
+```
+
+Lastly we combine our function with our scraped links like so and develop a data set utilizing the purrr map_dfr command. Note that this takes several minutes to run, so we don't want to run this last line very often.
+
+```{r Dataset Formation, echo=TRUE}
+
+#Step 3: Create final dataset and write csv file
+
+candidate_df<-map_dfr(linksdf$link, CDP_Scrape)
+Data<-candidate_df
+write.csv(Data)
+
+```
+
