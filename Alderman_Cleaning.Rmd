@@ -1,0 +1,209 @@
+---
+title: "Aldermanic Election Cleaning"
+author: "John Ruf"
+date: "10/10/2020"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+his code is meant to clean the dataset scraped from the previous webscrape markdown file in this project. This file is still in progress, even though the code works as is because there's a lot of unnesessary steps that can be made more lean. Eg. there's 3 different spots that I remove single count candidates that can be condensed into 1. However, since the code works as is and is legible that is another task for another time. 
+
+## Creating Codes
+
+The first thing we need to do to separate out the string is to create a set of codes that will parse out the information that we need. We will need one for Ward and one for year. We'll need these to incorporate spatial and temporal fixed effects controls into our regression discontinuity model. Furthermore to create a suitable running variable we'll need to parse out the rankings to determine the "runner ups" in each election.
+
+```{r String Codes, echo=TRUE}
+#Step 1: Create each code
+library(tidyverse)
+library(xlsx)
+library(readxl)
+Data<-read.csv("Data.csv")
+year_code <- "[0-9]{4}"
+ward_code <- "Ward [1-9]{1,2}"
+rank_code1<- "[0-9]{1,2}"
+rank_code2<- "of [0-9]{1,2}"
+```
+
+## Mutate From Strings
+
+Now we need to utilize these codes and more in order to seperate out the information in Title into several separate columns. First we create 3 dummy variables for general, primary, and special elections via utilizing the string detect command to detect if "title" contains the words "general," "Primary," or "Special." Next, we create 2 string variables for year and ward by extracting them off of the title variable, and then cleaning them for any blank spaces or leftover words.After that, we create 2 rank variables, Rankout and rankof via the same extraction method applied to rank, and then cleaning of excess words and spaces.Lastly we need to convert the voutecount to numeric, first we remove the pesky commas and then we simply apply the as numeric command for our final variable.
+
+```{r String Mutation, echo=FALSE}
+# Step 2: Mutate main dataset
+Data<-Data %>%
+  mutate(
+    #Part A: Create election type dummies
+    General=str_detect(Title,"General"),
+    Primary=str_detect(Title,"Primary Election,"),
+    Special=str_detect(Title,"Special"),
+    #Part B: create year and ward columns 
+    Year=str_split_fixed(str_extract(Title,year_code)," ",n=1),
+    Ward=str_split_fixed(str_extract(Title,ward_code)," ",n=1),
+    Ward=str_replace(Ward,"Ward",""),
+    Ward=str_replace(Ward," ",""),
+    Year=str_replace(Year," ",""),
+    #Part C: Create 2 ranking variables, rank out and rank of. Rank out indicates the ranking of the candidate and rank of indicates the number of candidates
+    Rankout=str_split_fixed(str_extract(Rank,rank_code1)," ",n=1),
+    Rankof=str_split_fixed(str_extract(Rank,rank_code2)," ",n=1),
+    Rankof=str_replace(Rankof,"of",""),
+    Rank=NULL,
+    #Part D: Transferring the vote count to numeric
+    VoteCount=str_replace(VoteCount,",",""),
+    VoteCount=as.numeric(VoteCount)
+      )
+```
+## Creating Runnerup Running Variable
+
+In order for our regression discontinuity analysis to work we need to create a valid running variable for assignment, for that purpose we'll develop a metric of how far above the votecount for a candidate in an election was above the 2cd place candidate. First we need to develop a key variable per election by making a seperate collumn that is the vote count if the candidate is the runnerup in the election and is otherwise NA. Then we remove the NA collumns and left join that data to our original dataset to develop a runnerup variable. Finally we mutate the new dataset to create a percent increased in the runnerup
+
+```{r Runnerup, echo=FALSE}
+#Step 3: Creating Runnerup variable
+  #Part A: Create runnerup indicator variable
+key<- Data %>% 
+  transmute(
+  Title=Title,
+  runnerup = ifelse(Rankout==2,VoteCount,NA))
+  #Part B: Develop indicator variable into a key
+key<-key %>%
+  filter(!is.na(runnerup))
+  #Part C: Join key to main dataset
+Data2<-left_join(Data,key)
+  #Part D: Mutate to create a pct runner up variable
+Data2<-Data2 %>%
+  mutate(
+    pctrunnerup= VoteCount/runnerup*100
+  )
+```
+
+  However, there's still the issue of manually cleaning the data's usage of names, of which there are a handful of errors that need to be manually delt with in excel. The write.csv command is used for this currently, and then imported back into R under the name "Alderman2" using the read_excel command. We need to compare only the candidate's first two elections, so we need to add a variable for the number of elections for each candidate that will allow us to filter our dataset down some more. First by removing candidates who only ran once (and thus don't have a second election we can compare) as well as taking only the first two elections each candidate were a part of. To do that we slice the minimum year year for each candidate into a new dataframe, delete them, and then take the minimum again, which allows us to slice off only the first 2 elections for each candidate.
+
+
+```{r election filter, echo=FALSE}
+Alderman <- read_excel("~/Schoolwork/Fall 2020/Writing Sample Project/Alderman2.xlsx")
+
+#Step 4: Slicing out everything but the first 2 elections for each candidate
+  #Part A: Create an election count variable key and join back into the main dataset
+Data3<-Alderman %>%
+  group_by(Name) %>%
+  summarize(elections = n())
+
+Data3<-left_join(Data2,Data3)
+
+  #Part B: Removing all candidates who only ran once.
+Data3<-Data3 %>%
+  filter(elections != 1)
+  #Part C: Slicing first minimums into new data frame, and removing them from the old dataframe
+first_mins<-Data3 %>%
+  group_by(Name) %>%
+  slice_min(Year)
+Data3<-Data3 %>%
+  group_by(Name) %>%
+  filter(Year != min(Year))
+  #Part D: Slicing second minimums into new data frame, and removing them from the old dataframe
+second_mins<-Data3 %>%
+  group_by(Name) %>%
+  slice_min(Year)
+#combining the first and second minimum slices into the final dataframe for this step.
+Data5<-bind_rows(first_mins,second_mins)
+
+```
+
+  The problem with this data is that it's too long: what we want is two columns for each candidate: one for their first election pctrunnerup and one for their second election pctrunnerup for our naive RD analysis. So first we use mutate to create a variable that labels each election as first or second. We call this election experience as it indicates whether or not the election was the candidate's first or second election. 
+  
+```{r election experience}
+#Step 5: Creating election experience variable
+Data6<-Data5 %>%
+  group_by(Name) %>%
+  mutate(
+    Election_experience = ifelse(Year == min(Year),1,2)
+  )
+```
+  
+  
+  Next we need to remove useless datapoints, including those with NA for percent runnerup (who ran unopposed), and those with No Candidate, and those that have the candidate labelled as "over vote" and "Under vote".
+```{r filtering odds and ends}
+#Step 6: Filtering out NA's and other oddities
+Data6<-Data6 %>%
+  filter(Name != "No Candidate",Name !="Other Votes", Name !="Over Votes", Name !="Under Votes")
+Data6<-Data6 %>%
+  filter(!is.na(pctrunnerup))
+```
+  The issue that we introduced in doing this is that we have candidates who only have 1 years worth of elections that we need to remove. We also have multi-stage elections where we don't care about their primary performance if that primary election doesn't determine the outcome of the election seat. So first we remove some variables that have outlived their usefulness. Then we create 2 more variables that will assist us in our next cleaning steps utilizing the same key and join method used before.
+  
+```{r counts for cleaning}
+#Step 7: Create new election count variables for cleaning
+Data6<-Data6 %>%
+  group_by(Name) %>%
+  mutate(
+    Party=NULL,
+    elections=NULL
+      )
+Ecount_key<-Data6 %>%
+  group_by(Name) %>%
+  summarize(
+    Ecount= n()
+  )
+EYearcount_key<-Data6 %>%
+  group_by(Name,Year) %>%
+  summarize(
+    EYearcount= n()
+  )
+
+Data7<-left_join(Data6,EYearcount_key)
+Data7<-left_join(Data7,Ecount_key)
+```
+  It looks like our deletion of candidates who won unopossed by removing the pctrunnnerup=NA rows left some candidates without a first or second election, so we need to remove those rows. Then we need to filter the rows where primary is true and Eyearcount=2 to remove the primary elections that do not matter. To remove these, we'll create a new dataframe and then utilize the anti_join command.
+```{r antijoing deletion}
+#Step 7: Remove more NA's and single runners
+Removes<-Data7 %>%
+  filter(EYearcount==2 & Primary == TRUE)
+Data8<-anti_join(Data7,Removes)
+```
+  We can now remove those extra columns we created, but we still have a handful of single of rows that only have 1 "true" election that we need to remove. We will do so in a similar manner as before, by creating an indicator key, joining that key to the main dataset and then removing any value with the indicator. We also have to remove a candidate with an infinite pctrunnerup due to his runnerup getting 0 votes.
+```{r more single election removal}
+#Step 8: Remove yet more single 1 true election
+Data8<-Data8 %>%
+  mutate(
+    Ecount=NULL,
+    EYearcount=NULL,
+  )
+INDKey<-Data8 %>%
+  group_by(Name) %>%
+  summarize(
+  Indicator=n())
+
+Data9<-left_join(Data8,INDKey)
+Data9<-Data9 %>%
+  filter(Indicator != 1)
+Data9<-Data9 %>%
+  filter(
+    Name != "Regner Suarez"
+  )
+```
+
+  Now we simply pivot wider after removing most of our columns to get our final dataset. Then we create an incumbency variable and utilize our older datasets to our years and wards for fixed effects.
+```{r pivot, echo=TRUE}
+#Step 9: Pivot wider into final dataset.
+Data10<-Data9 %>%
+  transmute(Name,pctrunnerup,Election_experience = ifelse(Election_experience==1,"First_Election","Second_Election"))
+
+Data11<-Data10 %>%
+  pivot_wider(names_from = Election_experience,values_from=pctrunnerup)
+
+Data11<-Data11 %>%
+  mutate(
+    Incumbency=ifelse(First_Election >100, 1,0)
+  )
+
+#Now we finish by writing a csv file that titled RD_DF for our final data analysis.
+#write.csv(Data11,"C:\\Location\\RD_DF.csv")
+
+```
+  
+  
